@@ -1,0 +1,9 @@
+node_modules
+dist
+test-results
+public/reality-style.json
+src/demo-paths.json
+src/demo-points.json
+package-lock.json
+AGENTS.md
+CONCEPT.md
