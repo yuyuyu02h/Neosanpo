@@ -1,6 +1,7 @@
 import './style.css';
 import { WorldMap } from './map.ts';
 import { nearbyPlaces } from './places.ts';
+import { findRoute, routeProgress, type WalkingNetwork } from './navigation.ts';
 import { itemById } from './items.ts';
 import { itemArt, landscape, sprig } from './art.ts';
 import { icon, escapeHtml as esc } from './icons.ts';
@@ -14,6 +15,17 @@ let save = loaded.data;
 const mode = 'live' as const;
 let view: View = 'map';
 let places: Place[] = [];
+let network: WalkingNetwork | null = null;
+let offRoute = false;
+let remaining = 0;
+const hiddenPlaces = new Set<string>();
+try {
+  const values = JSON.parse(localStorage.getItem('neosanpo:hidden-places') ?? '[]');
+  if (Array.isArray(values))
+    values.filter((v) => typeof v === 'string').forEach((v) => hiddenPlaces.add(v));
+} catch {
+  /* 読み取り失敗時は空から開始。 */
+}
 let selected: Place | undefined;
 let position: Coordinate | null = null;
 let currentFix: LocationFix | null = null;
@@ -35,33 +47,31 @@ let locationGeneration = 0;
 const app = document.querySelector<HTMLDivElement>('#app')!;
 app.innerHTML = `
   <aside class="sidebar">
-    <a class="brand" href="#" aria-label="まよいみち ホーム" data-action="nav-map"><span class="brand-mark">${sprig()}</span><span><strong>まよいみち</strong><small>MAYOIMICHI</small></span></a>
-    <div class="side-intro"><span class="eyebrow">A LITTLE WALK, A STRANGE WORLD.</span><h1>いつもの道の、<br>向こうがわ。</h1><p>行き先は、すこし不思議。<br>持ち帰るのは、なんでもない宝物。</p></div>
+    <a class="brand" href="#" data-action="nav-map">${sprig()}<strong>まよいみち</strong></a>
     <nav class="main-nav" aria-label="メインメニュー">
-      <button class="nav-button active" data-action="nav-map">${icon('compass')}<span>散歩する</span><span class="nav-dot"></span></button>
-      <button class="nav-button" data-action="nav-collection">${icon('bag')}<span>拾ったもの</span><span class="collection-count">0</span></button>
-      <button class="nav-button" data-action="nav-journal">${icon('book')}<span>散歩の記録</span></button>
+      <button class="nav-button active" data-action="nav-map">${icon('compass')}地図</button>
+      <button class="nav-button" data-action="nav-collection">${icon('bag')}コレクション <b class="collection-count">0</b></button>
+      <button class="nav-button" data-action="nav-journal">${icon('book')}散歩の記録</button>
     </nav>
-    <div class="side-bottom"><div class="field-note"><span class="eyebrow">FIELD NOTE / 001</span><div class="scene">${landscape}</div><p>遠くへ行かなくても、<br>知らないものは落ちている。</p><span class="note-rule"></span></div><div class="side-footer"><span>道は現実。あとは、異世界。</span><button class="icon-button" data-action="about" aria-label="この散歩について">${icon('info', 18)}</button></div></div>
+    <img class="sidebar-art" src="/fantasy/tower.webp" alt=""/><button class="text-button" data-action="about">${icon('info', 16)}使い方・設定</button>
   </aside>
-  <header class="mobile-header"><a href="#" class="brand" data-action="nav-map"><span class="brand-mark">${sprig()}</span><strong>まよいみち</strong></a><button class="icon-button" data-action="about" aria-label="この散歩について">${icon('info')}</button></header>
+  <header class="mobile-header"><a class="brand" href="#" data-action="nav-map">${sprig()}<strong>まよいみち</strong></a><button class="icon-button" data-action="about" aria-label="使い方と設定">${icon('info')}</button></header>
   <main class="main-area">
-    <section id="map-view" class="map-view awaiting-location" aria-label="異世界の散歩地図">
-      <div id="location-gate" class="location-gate"></div><div id="world-map"></div><div class="map-vignette"></div>
-      <div class="map-heading"><div><span class="eyebrow">THE OTHER SIDE</span><h2 id="region-title">あなたの街の、向こうがわ</h2><span class="region-sub" id="region-sub">現在地を確認して、地図を開きます</span></div><div class="map-heading-actions"><button class="mode-pill" data-action="mode"><span></span><span id="mode-label">GPS確認待ち</span>${icon('arrow', 14)}</button><button class="icon-button sound-button" data-action="sound" aria-label="発見の音をオンにする">${icon('mute')}</button></div></div>
-      <div class="map-toolbar"><button class="icon-button compass-button" data-action="north" aria-label="地図を北向きに戻す"><span>N</span>${icon('compass', 27)}</button><div class="toolbar-group"><button class="icon-button" data-action="zoom-in" aria-label="地図を拡大">${icon('plus')}</button><button class="icon-button" data-action="zoom-out" aria-label="地図を縮小">${icon('minus')}</button></div><button class="icon-button" data-action="center" aria-label="現在の位置を地図の中心へ">${icon('locate')}</button></div>
-      <div class="theme-switch" role="group" aria-label="地図の表示"><button data-action="fantasy" class="active" aria-pressed="true">${icon('spark', 16)}異世界</button><button data-action="reality" aria-pressed="false">${icon('map', 16)}現実</button></div>
-      <div id="map-status" class="map-status hidden" role="status"><span class="spinner"></span>向こうがわの地図をひらいています</div>
-      <div class="map-bottom"><div class="map-caption"><span class="caption-line"></span>散歩の先に、なにかがある。<span class="caption-line"></span></div><div id="quest-card" class="quest-card"></div><div class="map-footnote"><span>${icon('walk', 13)}立ち止まって、見つけよう。</span><button data-action="destinations">ほかの気配を探す ${icon('arrow', 13)}</button></div></div>
-      <div class="coordinate-note">あなたの一歩が、地図を進める。<br><span>YOUR REAL STEPS. ANOTHER WORLD.</span></div>
+    <section id="map-view" class="map-view awaiting-location" aria-label="散歩の地図">
+      <div id="location-gate" class="location-gate"></div><div id="world-map"></div>
+      <div class="map-heading"><button class="mode-pill" data-action="mode"><span class="gps-dot"></span><span id="mode-label">GPS確認中</span></button><span id="region-sub" class="sr-only"></span></div>
+      <div class="theme-switch" role="group" aria-label="地図の表示"><button data-action="fantasy" class="active" aria-pressed="true">${icon('spark', 15)}異世界</button><button data-action="reality" aria-pressed="false">${icon('map', 15)}現実</button></div>
+      <div class="map-toolbar"><button class="icon-button" data-action="north" aria-label="北向きに戻す">${icon('compass')}</button><div class="toolbar-group"><button class="icon-button" data-action="zoom-in" aria-label="拡大">${icon('plus')}</button><button class="icon-button" data-action="zoom-out" aria-label="縮小">${icon('minus')}</button></div><button class="icon-button locate-button" data-action="center" aria-label="現在地へ">${icon('locate')}</button></div>
+      <div id="map-status" class="map-status hidden" role="status"></div>
+      <div class="map-bottom"><div id="quest-card" class="quest-card" aria-live="polite"></div></div>
     </section>
     <section id="collection-view" class="content-view hidden" aria-labelledby="collection-title"></section>
     <section id="journal-view" class="content-view hidden" aria-labelledby="journal-title"></section>
   </main>
-  <nav class="mobile-nav" aria-label="モバイルメニュー"><button data-action="nav-map" class="active">${icon('compass')}<span>散歩</span></button><button data-action="nav-collection">${icon('bag')}<span>拾ったもの <b class="collection-count">0</b></span></button><button data-action="nav-journal">${icon('book')}<span>記録</span></button></nav>
+  <nav class="mobile-nav" aria-label="メニュー"><button data-action="nav-map" class="active">${icon('compass')}<span>地図</span></button><button data-action="nav-collection">${icon('bag')}<span>コレクション <b class="collection-count">0</b></span></button><button data-action="nav-journal">${icon('book')}<span>記録</span></button></nav>
   <dialog id="dialog" aria-labelledby="dialog-title"><button class="dialog-close icon-button" data-action="close-dialog" aria-label="閉じる">${icon('close')}</button><div id="dialog-content"></div></dialog>
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <div id="storage-warning" class="storage-warning hidden" role="alert">記録を自動保存できません。<button data-action="nav-journal">記録を書き出す</button></div>
+  <div id="toast" class="toast" role="status"></div>
+  <div id="storage-warning" class="storage-warning hidden" role="alert">保存できません。<button data-action="nav-journal">記録を書き出す</button></div>
 `;
 
 const $ = <T extends HTMLElement = HTMLElement>(selector: string): T =>
@@ -75,7 +85,8 @@ function collectedPlaces(): Set<string> {
 function availablePlaces(): Place[] {
   if (!position) return [];
   return nearestPlaces(places, position, collectedPlaces()).filter(
-    (p) => distance(position!, p.coordinate) >= WALK_RULES.minimumDestination,
+    (p) =>
+      !hiddenPlaces.has(p.id) && distance(position!, p.coordinate) >= WALK_RULES.minimumDestination,
   );
 }
 function toast(message: string): void {
@@ -131,8 +142,8 @@ function mapStatus(state: 'loading' | 'ready' | 'error'): void {
   element.classList.toggle('error', state === 'error');
   element.innerHTML =
     state === 'error'
-      ? `${icon('info')}<span>地図が届きませんでした。通信を確認してください。</span><button data-action="retry-map">もう一度</button>`
-      : '<span class="spinner"></span>向こうがわの地図をひらいています';
+      ? `${icon('info')}<span>地図を読み込めませんでした。</span><button data-action="retry-map">もう一度</button>`
+      : '<span class="spinner"></span>地図を読み込み中…';
 }
 
 function syncMap(): void {
@@ -141,7 +152,7 @@ function syncMap(): void {
     selected?.id ?? '',
     collectedPlaces(),
   );
-  if (position) world.setPlayer(position);
+  if (position) world.setPlayer(position, false);
 }
 function selectPlace(id: string): void {
   if (session) {
@@ -152,6 +163,7 @@ function selectPlace(id: string): void {
   if (!place) return;
   selected = place;
   syncMap();
+  world.setRoute(null);
   world.frameDestination(place.coordinate);
   renderQuest();
 }
@@ -166,7 +178,7 @@ function pickupReady(): boolean {
 function renderGate(): void {
   if (position) return;
   $('#location-gate').innerHTML =
-    `<div class="location-intro"><span class="eyebrow">YOUR REAL WORLD, REIMAGINED</span><div class="gate-landscape">${landscape}</div><h1>あなたのいる場所が、<br>異世界の入口。</h1><p>スマホを持って、近くを歩こう。<br>実際にたどり着いた場所で、忘れものが見つかる。</p><button class="primary-button" data-action="use-location" ${locating ? 'disabled' : ''}>${locating ? '<span class="spinner"></span>現在地を確認しています' : `${icon('locate', 19)}現在地から、散歩を始める`}</button><p class="location-message" role="status">${esc(locationError || '位置情報を許可すると、いまいる場所の地図が開きます。')}</p><button class="text-button" data-action="phone-help">スマホでの開き方 ${icon('arrow', 15)}</button><p class="privacy-note">現在地を地図の表示と周辺検索に使います。<br>地図サービスに座標を送信します。移動の軌跡は保存しません。</p></div>`;
+    `<div class="location-intro"><div class="entry-art"><img src="/fantasy/castle.webp" alt="森に囲まれた石造りの城"/></div><h1>いつもの街を、<br>違う世界で歩こう。</h1><p>近くのアイテムを選んで、歩いて取りに行く。<br>まずは現在地の地図を開きます。</p><button class="primary-button" data-action="use-location" ${locating ? 'disabled' : ''}>${locating ? '<span class="spinner"></span>現在地を確認中' : `${icon('locate', 19)}現在地から始める`}</button><p class="location-message" role="status">${esc(locationError || '位置情報の利用を許可してください。')}</p><button class="text-button" data-action="phone-help">スマホでの使い方</button><p class="privacy-note">現在地を地図サービスへ送信します。<br>移動の履歴は保存しません。</p></div>`;
 }
 
 function renderQuest(): void {
@@ -178,39 +190,35 @@ function renderQuest(): void {
     return;
   }
   if (searching) {
-    card.innerHTML = `<div class="quest-loading"><span class="spinner"></span><div><h3>近くの気配を探しています。</h3><p>実際に歩いていける、周辺の場所を探しています。</p></div><button class="text-button" data-action="cancel-search">中止</button></div>`;
+    card.innerHTML = `<div class="dock-message"><span class="spinner"></span><span>近くの道路を確認中…</span><button class="text-button" data-action="cancel-search">中止</button></div>`;
     return;
   }
   const place = session?.place ?? selected;
   if (!place) {
-    card.innerHTML = `<div class="quest-empty">${icon('spark', 30)}<div><span class="eyebrow">TAKE YOUR TIME</span><h3>${searchError ? '気配を見失ってしまった。' : 'もう少し、歩いてみよう。'}</h3><p>${esc(searchError || '歩いて向かえる距離に、まだ見つかっていない場所を探します。')}</p></div></div><button class="primary-button" data-action="search-nearby">近くの気配を探す ${icon('arrow', 18)}</button>`;
+    card.innerHTML = `<div class="dock-message"><span>${esc(searchError || '近くに行ける場所が見つかりませんでした。')}</span><button class="primary-button" data-action="search-nearby">再検索</button></div>`;
     return;
   }
-  const meters = distance(position, place.coordinate);
   const state = session
     ? pickupState(session.evidence, currentFix, place.coordinate, Date.now())
     : null;
   const ready = state === 'ready';
   const fresh = accurateFix(currentFix, Date.now());
-  const action = !session ? 'start' : ready ? 'discover' : 'center';
-  const button = !session
-    ? 'ここへ、歩き始める'
-    : ready
-      ? '足もとを見てみる'
-      : state === 'settling'
-        ? 'ここで、ひと休み'
-        : '現在地を見渡す';
-  const messages = {
-    position: 'GPSを確認しています。空の見える場所でお待ちください。',
-    walking: 'スマホを持って歩いてください。移動をGPSで確認しています。',
-    far: '現実の道を歩いて、気配の近くへ。',
-    settling: '近くに着きました。立ち止まって、位置が落ち着くのを待とう。',
-    ready: 'ここまで歩いたあなたに、小さな忘れもの。',
-  };
-  const note =
-    locationError ||
-    (state ? messages[state] : '距離は直線の目安です。現実の道に沿って歩いてください。');
-  card.innerHTML = `<div class="quest-topline"><span class="eyebrow"><span class="tiny-dot"></span>${session ? (ready ? 'SOMETHING AT YOUR FEET' : 'YOUR STEPS, YOUR JOURNEY') : 'YOUR NEXT LITTLE DETOUR'}</span><span class="quest-number">${fresh ? 'GPS接続中' : 'GPS確認待ち'}</span></div><div class="quest-main"><div class="quest-seal">${icon(ready ? 'spark' : 'pin', 28)}<span class="seal-spark">✧</span></div><div class="quest-copy"><h3>${ready ? 'なにか、落ちている。' : esc(place.name)}</h3><p>${esc(ready ? '立ち止まって、そっと見てみよう。' : place.hint)}</p></div><div class="quest-distance"><strong>${Math.round(meters)}</strong><span>m <small>直線</small></span></div></div><div class="quest-actions"><span class="quest-place">${icon('pin', 13)}${esc(place.realName)}</span><button class="primary-button" data-action="${action}" ${!session && !fresh ? 'disabled' : ''}>${button}${icon(ready ? 'spark' : 'arrow', 18)}</button></div><div class="walk-status"><span>${esc(note)}${session ? `<br>確認できた歩行：${formatDistance(session.evidence.totalDistance)}` : ''}</span>${session ? '<button data-action="stop-walk">散歩をやめる</button>' : ''}</div>`;
+  const item = itemById(place.itemId);
+  const meters = session ? remaining : place.routeDistance;
+  const note = locationError
+    ? 'GPSを再確認してください'
+    : !fresh
+      ? 'GPSを確認中'
+      : offRoute
+        ? 'ルートを外れています'
+        : ready
+          ? '到着しました'
+          : state === 'settling'
+            ? '到着を確認中…'
+            : session
+              ? `徒歩ルート · 残り${formatDistance(meters)}`
+              : `${esc(place.realName)} · 約${Math.max(1, Math.ceil(meters / 70))}分`;
+  card.innerHTML = `<div class="dock-row"><button class="dock-item" data-action="route-details" aria-label="${esc(place.name)}の詳細">${itemArt(item.art)}</button><button class="dock-copy" data-action="${session ? 'route-details' : 'destinations'}"><strong>${esc(place.name)}</strong><span class="quest-place">${note}</span></button><button class="primary-button dock-action" data-action="${!session ? 'start' : ready ? 'discover' : offRoute ? 'reroute' : 'route-details'}" ${!session && !fresh ? 'disabled' : ''}>${!session ? 'ルートを表示' : ready ? '拾う' : offRoute ? '再検索' : `${formatDistance(meters)} ${icon('arrow', 15)}`}</button></div>`;
 }
 
 function navigate(next: View): void {
@@ -231,15 +239,15 @@ function navigate(next: View): void {
 function renderCollection(): void {
   const finds = [...save.finds].reverse();
   $('#collection-view').innerHTML =
-    `<div class="page-heading"><span class="eyebrow">A ROOM FOR ORDINARY TREASURES</span><h2 id="collection-title">なんでもない、宝物。</h2><p>役には立たなくても。<br class="mobile-break">拾った日のことは、思い出せる。</p><span class="page-count">${finds.length}<small>個の忘れもの</small></span></div>${
+    `<div class="page-heading"><h2 id="collection-title">コレクション</h2><p>散歩で見つけたアイテム</p><span class="page-count">${finds.length}<small>個</small></span></div>${
       finds.length
         ? `<div class="item-grid">${finds
             .map((find, i) => {
               const item = itemById(find.itemId);
               return `<button class="item-card" data-action="item-detail" data-id="${esc(find.id)}"><div class="item-picture" style="--item-color:${item.color}"><span class="item-number">NO. ${String(finds.length - i).padStart(3, '0')}</span>${itemArt(item.art)}</div><div class="item-card-copy"><h3>${item.name}</h3><p>${item.subtitle}</p><span>${dateText(find.foundAt)} ${icon('arrow', 15)}</span></div></button>`;
             })
-            .join('')}</div><p class="shelf-note">持っていることに、理由はいらない。</p>`
-        : `<div class="empty-state"><div class="empty-illustration">${itemArt('key')}</div><span class="eyebrow">NOTHING YET. THAT'S A START.</span><h3>ポケットは、まだ空っぽ。</h3><p>何が落ちているかは、行ってからのお楽しみ。<br>小さな寄り道に、出かけてみよう。</p><button class="primary-button" data-action="nav-map">最初の散歩へ ${icon('arrow', 18)}</button></div>`
+            .join('')}</div>`
+        : `<div class="empty-state"><div class="empty-illustration">${itemArt('key')}</div><h3>まだアイテムはありません</h3><p>地図から目的地を選んで歩いてみてください。</p><button class="primary-button" data-action="nav-map">地図を開く ${icon('arrow', 18)}</button></div>`
     }`;
 }
 
@@ -247,7 +255,7 @@ function renderJournal(): void {
   const realWalks = save.walks.filter((w) => w.mode === 'live');
   const total = realWalks.reduce((sum, walk) => sum + walk.distance, 0);
   $('#journal-view').innerHTML =
-    `<div class="page-heading"><span class="eyebrow">SMALL STEPS, QUIET STORIES</span><h2 id="journal-title">歩いた日のこと。</h2><p>いつもの一日から、<br class="mobile-break">すこしだけ、はみ出した記録。</p><button class="outline-button export-button" data-action="export">${icon('download', 16)}記録を書き出す</button></div><div class="journal-stats"><div><span>近所を歩いた距離</span><strong>${formatDistance(total)}</strong></div><div><span>近所の散歩</span><strong>${realWalks.length}<small>回</small></strong></div><div><span>持ち帰った品</span><strong>${save.finds.length}<small>個</small></strong></div></div>${
+    `<div class="page-heading"><h2 id="journal-title">散歩の記録</h2><p>歩いた距離と見つけたアイテム</p><button class="outline-button export-button" data-action="export">${icon('download', 16)}記録を書き出す</button></div><div class="journal-stats"><div><span>確認できた歩行距離</span><strong>${formatDistance(total)}</strong></div><div><span>散歩</span><strong>${realWalks.length}<small>回</small></strong></div><div><span>アイテム</span><strong>${save.finds.length}<small>個</small></strong></div></div>${
       save.walks.length
         ? `<div class="journal-list">${[...save.walks]
             .reverse()
@@ -257,7 +265,7 @@ function renderJournal(): void {
               return `<button class="journal-entry" data-action="item-detail" data-id="${esc(find.id)}"><div class="journal-art" style="background:${item.color}">${itemArt(item.art)}</div><div><span class="entry-date">${dateText(walk.endedAt)}</span><h3>${item.name}を拾った日</h3><p>${esc(find.placeName)}</p></div><span class="entry-distance">${formatDistance(walk.distance)}${icon('arrow', 17)}</span></button>`;
             })
             .join('')}</div>`
-        : `<div class="journal-empty">${landscape}<h3>最初の一歩を、待っています。</h3><p>散歩で何かを拾うと、ここに記録が残ります。</p><button class="text-button" data-action="nav-map">散歩に出かける ${icon('arrow', 16)}</button></div>`
+        : `<div class="journal-empty">${landscape}<h3>まだ記録はありません</h3><p>散歩で何かを拾うと、ここに記録が残ります。</p><button class="text-button" data-action="nav-map">地図を開く ${icon('arrow', 16)}</button></div>`
     }<p class="storage-note">記録はこのブラウザに保存されます。位置の履歴は保存しません。<br>距離はGPSの誤差を除いた目安です。実際の歩行より短く表示する場合があります。</p>`;
 }
 
@@ -273,21 +281,60 @@ function closeDialog(): void {
 
 function showMode(): void {
   showDialog(
-    `<span class="eyebrow">CONNECTED TO YOUR FOOTSTEPS</span><h2 id="dialog-title">いまいる場所から、歩く。</h2><p class="dialog-lead">現在地の道路はそのままに、街の姿が異世界へ変わります。人物はスマートフォンの実際の移動に合わせて進みます。</p><div class="gps-detail">${accurateFix(currentFix, Date.now()) ? `GPSの位置精度：約${Math.round(currentFix!.accuracy)}m` : '現在地の確認を待っています。'}</div><button class="primary-button" data-action="use-location">${icon('locate', 18)}現在地を再確認</button><p class="privacy-note">位置情報の許可と、端末の「正確な位置情報」をオンにしてください。散歩中はこの画面を開いたままにします。GPSの移動・精度・到着を確認できたときだけ、品を拾えます。</p><button class="text-button" data-action="phone-help">スマホでの開き方 ${icon('arrow', 15)}</button>`,
+    `<h2 id="dialog-title">位置情報</h2><p class="dialog-lead">${accurateFix(currentFix, Date.now()) ? `位置精度：約${Math.round(currentFix!.accuracy)}m` : '正確な現在地を取得できていません。'}</p><button class="primary-button" data-action="use-location">${icon('locate', 18)}現在地を再取得</button><p class="privacy-note">端末で「正確な位置情報」を許可してください。散歩中は画面を開いたまま使います。</p>`,
   );
 }
 
 function showPhoneHelp(): void {
   showDialog(
-    `<span class="eyebrow">TAKE IT OUTSIDE</span><h2 id="dialog-title">スマホで、外へ。</h2><p class="dialog-lead">スマートフォンのSafariまたはChromeで、HTTPSのアプリURLを開きます。</p><div class="about-steps"><p><b>01</b> 「現在地から、散歩を始める」を押す。</p><p><b>02</b> 位置情報と、正確な位置の利用を許可する。</p><p><b>03</b> 目的地を選び、画面を開いたまま歩く。</p></div><p class="privacy-note">PCに表示された localhost / 127.0.0.1 は、そのPC専用のURLです。スマホではHTTPSで配信されたURLを使います。ホーム画面に追加して使うこともできます。</p><button class="primary-button" data-action="close-dialog">わかりました ${icon('check', 18)}</button>`,
+    `<h2 id="dialog-title">スマホでの使い方</h2><div class="about-steps"><p><b>1</b> HTTPSのアプリURLをSafariかChromeで開く。</p><p><b>2</b> 「現在地から始める」を押して位置情報を許可。</p><p><b>3</b> アイテムを選び「ルートを表示」。画面を開いたまま歩く。</p><p><b>4</b> 到着したら「拾う」で追加。</p></div><p class="privacy-note">PCのlocalhostはスマホから開けません。ホーム画面に追加して使うこともできます。</p><button class="primary-button" data-action="close-dialog">閉じる</button>`,
   );
 }
 
 function showDestinations(): void {
   const available = availablePlaces();
   showDialog(
-    `<span class="eyebrow">LITTLE SIGNS NEARBY</span><h2 id="dialog-title">あっちにも、気配。</h2><p class="dialog-lead">何があるかは、まだわからない。</p><div class="destination-list">${available.map((p) => `<button data-action="choose-place" data-id="${esc(p.id)}">${icon('spark', 23)}<span><strong>${esc(p.name)}</strong><small>${esc(p.realName)}</small></span><span class="destination-distance">${formatDistance(distance(position!, p.coordinate))}${icon('arrow', 14)}</span></button>`).join('') || '<p>このあたりの落とし物は、ひとめぐりしました。</p>'}</div><button class="outline-button" data-action="search-nearby">もう一度、近くを探す</button><p class="privacy-note">距離は現在の位置からの直線距離です。</p>`,
+    `<h2 id="dialog-title">近くのアイテム</h2><div class="destination-list">${available.map((p) => `<button data-action="choose-place" data-id="${esc(p.id)}"><span class="destination-art">${itemArt(itemById(p.itemId).art)}</span><span><strong>${esc(p.name)}</strong><small>${esc(p.realName)}</small></span><span class="destination-distance">${formatDistance(p.routeDistance)}${icon('arrow', 14)}</span></button>`).join('') || '<p>近くに候補がありません。</p>'}</div><button class="outline-button" data-action="search-nearby">${icon('refresh', 16)}周辺を再検索</button>`,
   );
+}
+function showRouteDetails(): void {
+  const place = session?.place ?? selected;
+  if (!place) return;
+  showDialog(
+    `<h2 id="dialog-title">${esc(place.name)}</h2><p class="dialog-lead">${esc(place.realName)}</p><div class="route-summary">${icon('walk', 24)}<strong>${formatDistance(session ? remaining : place.routeDistance)}</strong><span>徒歩 約${Math.max(1, Math.ceil((session ? remaining : place.routeDistance) / 70))}分</span></div><p class="privacy-note">道路データから作った徒歩ルートです。現地の通行規制に従ってください。</p>${session ? `<button class="primary-button" data-action="overview-route">ルート全体を見る</button><button class="outline-button" data-action="stop-walk">ルートを終了</button>` : '<button class="primary-button" data-action="start">ルートを表示</button>'}<button class="text-button report-button" data-action="hide-place">この場所には行けない · 非表示にする</button>`,
+  );
+}
+function hidePlace(): void {
+  const place = session?.place ?? selected;
+  if (!place) return;
+  hiddenPlaces.add(place.id);
+  try {
+    localStorage.setItem('neosanpo:hidden-places', JSON.stringify([...hiddenPlaces]));
+  } catch {
+    toast('この端末へ保存できませんでした。');
+  }
+  session = null;
+  releaseScreen();
+  world.setRoute(null);
+  closeDialog();
+  selected = availablePlaces()[0];
+  syncMap();
+  renderQuest();
+  toast('この場所を非表示にしました。');
+}
+function reroute(): void {
+  if (!session || !network || !position || !accurateFix(currentFix, Date.now())) return;
+  const route = findRoute(network, position, session.place.nodeId);
+  if (!route || route.coordinates.length < 2) {
+    toast('現在地から通れる道を確認できません。道に戻って再検索してください。');
+    return;
+  }
+  session.route = route;
+  remaining = route.distance;
+  offRoute = false;
+  world.setRoute(route.coordinates);
+  renderQuest();
+  world.frameDestination(session.place.coordinate);
 }
 
 async function keepScreenAwake(): Promise<void> {
@@ -312,10 +359,21 @@ function startWalk(): void {
     selected = availablePlaces()[0];
     syncMap();
     renderQuest();
-    toast('歩いて向かえる距離の場所を、もう一度選んでください。');
+    toast('120m以上離れた目的地を選んでください。');
     return;
   }
+  if (!network) return;
+  const route = findRoute(network, currentFix.coordinate, selected.nodeId);
+  if (!route || route.coordinates.length < 2) {
+    toast('現在地からの徒歩ルートが見つかりません。');
+    return;
+  }
+  closeDialog();
+  remaining = route.distance;
+  offRoute = false;
+  world.setRoute(route.coordinates);
   session = {
+    route,
     place: selected,
     startedAt: new Date().toISOString(),
     evidence: startEvidence(currentFix),
@@ -324,7 +382,7 @@ function startWalk(): void {
   syncMap();
   renderQuest();
   world.frameDestination(selected.coordinate);
-  toast('いってらっしゃい。あなたが歩くと、地図の中のあなたも進みます。');
+  toast('徒歩ルートを表示しました。');
 }
 
 function showDiscovery(): void {
@@ -334,7 +392,7 @@ function showDiscovery(): void {
   }
   const item = itemById(session.place.itemId);
   showDialog(
-    `<div class="discovery-art" style="--item-color:${item.color}"><span class="eyebrow">WELL, LOOK AT THAT.</span>${itemArt(item.art)}<span class="discovery-spark a">✧</span><span class="discovery-spark b">✧</span></div><div class="discovery-copy"><span class="eyebrow">なんでもない、宝物を見つけた。</span><h2 id="dialog-title">${item.name}</h2><p class="item-subtitle">${item.subtitle}</p><p class="item-description">${item.description}</p><p class="item-note">${item.note}</p><button class="primary-button" data-action="keep">ポケットにしまう ${icon('bag', 18)}</button></div>`,
+    `<div class="discovery-art" style="--item-color:${item.color}">${itemArt(item.art)}<span class="discovery-spark a">✧</span><span class="discovery-spark b">✧</span></div><div class="discovery-copy"><h2 id="dialog-title">${item.name}</h2><p class="item-subtitle">${item.subtitle}</p><p class="item-description">${item.description}</p><p class="item-note">${item.note}</p><button class="primary-button" data-action="keep">コレクションに追加 ${icon('bag', 18)}</button></div>`,
     'item-dialog',
   );
 }
@@ -365,6 +423,7 @@ function keepItem(): void {
     mode,
   });
   session = null;
+  world.setRoute(null);
   releaseScreen();
   writeSave();
   selected = availablePlaces()[0];
@@ -372,7 +431,7 @@ function keepItem(): void {
   renderQuest();
   closeDialog();
   sound();
-  toast(`${itemById(find.itemId).name}を持ち帰りました。`);
+  toast(`${itemById(find.itemId).name}を追加しました。`);
   if (view === 'collection') renderCollection();
 }
 
@@ -382,7 +441,7 @@ function showItem(id: string): void {
   dialogFind = find;
   const item = itemById(find.itemId);
   showDialog(
-    `<div class="discovery-art" style="--item-color:${item.color}"><span class="eyebrow">A SMALL THING YOU BROUGHT HOME</span>${itemArt(item.art)}</div><div class="discovery-copy"><span class="eyebrow">${dateText(find.foundAt)}</span><h2 id="dialog-title">${item.name}</h2><p class="item-subtitle">${item.subtitle}</p><p class="item-description">${item.description}</p><p class="item-note">${item.note}</p><div class="found-location">${icon('pin', 15)}${esc(find.placeName)}</div><button class="outline-button" data-action="download-item">${icon('download', 16)}この品のカードを保存</button></div>`,
+    `<div class="discovery-art" style="--item-color:${item.color}">${itemArt(item.art)}</div><div class="discovery-copy"><span class="eyebrow">${dateText(find.foundAt)}</span><h2 id="dialog-title">${item.name}</h2><p class="item-subtitle">${item.subtitle}</p><p class="item-description">${item.description}</p><p class="item-note">${item.note}</p><div class="found-location">${icon('pin', 15)}${esc(find.placeName)}</div><button class="outline-button" data-action="download-item">${icon('download', 16)}この品のカードを保存</button></div>`,
     'item-dialog',
   );
 }
@@ -458,6 +517,11 @@ function useLocation(): void {
         void world.init(position);
       }
       world.setPlayer(position);
+      if (session) {
+        const progress = routeProgress(session.route, position);
+        remaining = progress.remaining;
+        offRoute = progress.offRoute;
+      }
       updateRegion();
       if (
         !session &&
@@ -508,11 +572,11 @@ async function searchNearby(): Promise<void> {
   try {
     const found = await nearbyPlaces(position, controller.signal);
     if (controller.signal.aborted) return;
-    places = found;
+    network = found.network;
+    places = found.places;
     selected = availablePlaces()[0];
-    if (found.length === 0)
-      searchError =
-        '近くに立ち寄れる候補が見つかりませんでした。少し場所を変えてから、もう一度探してください。';
+    if (places.length === 0)
+      searchError = '近くに歩けるルートが見つかりません。公共の道路で再検索してください。';
     syncMap();
     if (selected) world.frameDestination(selected.coordinate);
   } catch (error) {
@@ -559,7 +623,7 @@ function downloadItem(): void {
 
 function showAbout(): void {
   showDialog(
-    `<span class="eyebrow">WELCOME TO MAYOIMICHI</span><h2 id="dialog-title">道は現実。<br>あとは、異世界。</h2><div class="about-scene">${landscape}</div><p class="dialog-lead">少しだけ外へ出て、<br>誰かの忘れものを持って帰る。</p><div class="about-steps"><p><b>01</b> 地図の「気配」を目的地に選ぶ。</p><p><b>02</b> 現実の道を、自分のペースで歩く。</p><p><b>03</b> 近くに着いたら立ち止まり、拾う。</p></div><p class="privacy-note">異世界の建物と呼び名は演出です。「現実」ボタンで元の地図を確認できます。距離は直線の目安で、徒歩ルート案内は行いません。<br><br>記録はこのブラウザだけに保存されます。ブラウザのデータを消すと記録も消えるため、「散歩の記録」から書き出せます。実際の位置情報を使う際は、地図配信・周辺検索サービスに座標が送信されます。</p><button class="primary-button" data-action="close-dialog">寄り道へ、どうぞ ${icon('arrow', 18)}</button>`,
+    `<h2 id="dialog-title">使い方・設定</h2><div class="about-steps"><p><b>1</b> 地図からアイテムを選ぶ。</p><p><b>2</b> 「ルートを表示」で目的地へ歩く。</p><p><b>3</b> 到着を確認したら「拾う」。</p></div><button class="outline-button sound-button" data-action="sound">${icon(save.sound ? 'volume' : 'mute', 18)}発見の音：${save.sound ? 'オン' : 'オフ'}</button><button class="outline-button" data-action="mode">位置情報の設定</button><p class="privacy-note">建物の絵は異世界の演出です。「現実」で通常の地図に切り替えられます。地図に載っていない規制は反映されないため、入れない場所は目的地の詳細から非表示にしてください。<br><br>記録はこのブラウザ内に保存します。位置の履歴は保存しません。地図サービスには座標を送信します。</p><button class="text-button" data-action="phone-help">スマホでの使い方</button>`,
   );
 }
 
@@ -582,13 +646,27 @@ document.addEventListener('click', (event) => {
     case 'keep':
       keepItem();
       break;
+    case 'route-details':
+      showRouteDetails();
+      break;
+    case 'hide-place':
+      hidePlace();
+      break;
+    case 'reroute':
+      reroute();
+      break;
+    case 'overview-route':
+      closeDialog();
+      if (session) world.frameDestination(session.place.coordinate);
+      break;
     case 'stop-walk':
       session = null;
+      world.setRoute(null);
       releaseScreen();
+      closeDialog();
       selected = availablePlaces()[0];
       syncMap();
       renderQuest();
-      toast('ひと休み。目的地は、ここで待っています。');
       break;
     case 'mode':
       showMode();
@@ -596,15 +674,10 @@ document.addEventListener('click', (event) => {
     case 'use-location':
       useLocation();
       break;
-    case 'cancel-search': {
-      const wasLocating = locating;
+    case 'cancel-search':
       cancelSearch();
-      if (wasLocating) stopLocation();
-      if (position && !places.length)
-        searchError = '周辺検索を中止しました。もう一度探すこともできます。';
       renderQuest();
       break;
-    }
     case 'search-nearby':
       void searchNearby();
       break;
@@ -642,7 +715,6 @@ document.addEventListener('click', (event) => {
       writeSave();
       updateSoundButton();
       if (save.sound) sound();
-      toast(save.sound ? '発見の音をオンにしました。' : '発見の音をオフにしました。');
       break;
     case 'item-detail':
       if (target.dataset.id) showItem(target.dataset.id);
@@ -670,7 +742,8 @@ document.addEventListener('click', (event) => {
 
 function updateSoundButton(): void {
   const button = $('.sound-button');
-  button.innerHTML = icon(save.sound ? 'volume' : 'mute');
+  if (!button) return;
+  button.innerHTML = `${icon(save.sound ? 'volume' : 'mute')}発見の音：${save.sound ? 'オン' : 'オフ'}`;
   button.setAttribute('aria-label', `発見の音を${save.sound ? 'オフ' : 'オン'}にする`);
   button.setAttribute('aria-pressed', String(save.sound));
 }

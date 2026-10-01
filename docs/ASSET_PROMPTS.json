@@ -1,0 +1,31 @@
+{
+  "mode": "builtin image_gen",
+  "created": "2026-10-01",
+  "assets": {
+    "castle": {
+      "source": "assets/source-art/castle.png",
+      "runtime": "public/fantasy/castle.webp",
+      "prompt": "Use case: stylized-concept. Asset type: single transparent PNG fantasy game map building sprite. Paint a magnificent moss-covered Celtic fantasy stone castle, multiple steep slate turrets, weathered ivory stone, interwoven Celtic carvings, small glowing magical blue windows and energy runes, ivy and lush foliage around the base. Elevated orthographic 3/4 view, like a meticulously hand-painted illustrated fantasy world map, intricate ink outlines and watercolor/gouache detail, sophisticated earthy ochre and emerald greens with luminous cyan accents. Whole castle centered and fully visible, square image, generous transparent margins, base at bottom center. Genuine transparent alpha background: no square background, no sky, no text, no grid, no scene beyond a small irregular moss footprint. Consistent warm light from upper left. This is an actual game asset to be composited on real-world geography, not a screenshot or UI. Strong readable silhouette at 120px size."
+    },
+    "terrain": {
+      "source": "assets/source-art/terrain.png",
+      "runtime": "public/fantasy/terrain.webp",
+      "prompt": "Use case: stylized-concept. Asset type: seamless square repeating terrain texture for a fantasy illustrated map, top-down orthographic. Lush natural landscape: finely painted deep emerald moss, small ferns, grasses, subtle clusters of tiny foliage and weathered stone flecks. Intricate hand-painted ink and gouache cartography, soft warm light. Entire tile has equal density and no focal point. Seamlessly tileable on all four edges. No buildings, no roads, no water, no text, no border, no horizon, no trees with tall trunks. Muted olive and deep green, brighter moss highlights, texture stays readable under map roads. This is ground terrain only, 1024 square."
+    },
+    "tower": {
+      "source": "assets/source-art/tower.png",
+      "runtime": "public/fantasy/tower.webp",
+      "prompt": "Use case: stylized-concept. Asset: one genuine transparent PNG game-map sprite. Subject: a soaring slender wizard's tower with a crooked conical slate roof, stone spiral external stair, carved Celtic bands, ivy and floating cyan magical energy rings around the roof. Match a sophisticated hand-painted fantasy world map, elevated orthographic 3/4 view, fine ink and gouache detail, earthy ochre stone and deep emerald foliage, cyan magical highlights. Entire subject centered and fully visible with generous transparent margins, square image. Strong readable silhouette at 110 pixels. Warm upper-left light. No sky, no square background, no text, no labels, no UI. Actual transparent alpha outside the irregular base. The user requested Celtic fantasy architecture composited onto real geographic building and park footprints."
+    },
+    "village": {
+      "source": "assets/source-art/village.png",
+      "runtime": "public/fantasy/village.webp",
+      "prompt": "Use case: stylized-concept. Asset: one genuine transparent PNG game-map sprite. Subject: a lush tree-house village woven into three ancient giant oak trees, emerald foliage, wooden bridges, round whimsical little houses, tiny cyan magical lights, rooted irregular moss base. Match a sophisticated hand-painted fantasy world map, elevated orthographic 3/4 view, fine ink and gouache detail, earthy ochre stone and deep emerald foliage, cyan magical highlights. Entire subject centered and fully visible with generous transparent margins, square image. Strong readable silhouette at 110 pixels. Warm upper-left light. No sky, no square background, no text, no labels, no UI. Actual transparent alpha outside the irregular base. The user requested Celtic fantasy architecture composited onto real geographic building and park footprints."
+    },
+    "ruins": {
+      "source": "assets/source-art/ruins.png",
+      "runtime": "public/fantasy/ruins.webp",
+      "prompt": "Use case: stylized-concept. Asset: one genuine transparent PNG game-map sprite. Subject: a circular Celtic hill fort (rath) and spiraling stone ruins overgrown with lush ferns, ancient weathered standing stones around a glowing turquoise spell circle, small mounds and a low ruined arch. Match a sophisticated hand-painted fantasy world map, elevated orthographic 3/4 view, fine ink and gouache detail, earthy ochre stone and deep emerald foliage, cyan magical highlights. Entire subject centered and fully visible with generous transparent margins, square image. Strong readable silhouette at 110 pixels. Warm upper-left light. No sky, no square background, no text, no labels, no UI. Actual transparent alpha outside the irregular base. The user requested Celtic fantasy architecture composited onto real geographic building and park footprints."
+    }
+  }
+}

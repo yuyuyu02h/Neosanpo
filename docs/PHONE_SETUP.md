@@ -1,28 +1,38 @@
-# スマホで使うための配信と実地検証
+# スマホでの確認とCloudflare Pages
 
-## 現在の状態
+## 今回の状態
 
-v2の配布ビルドは `dist/`。インターネットには未公開。スマホ向けHTTPS URLの作成は、プロジェクトの「公開は許可なしに行わない」ルールに従い、所有者の許可後に実施する。
+v3のソースと配布ビルドはローカルで更新済み。ユーザーが設定したCloudflare Pagesへの今回の反映は未実施。既存の公開URLやデプロイ結果は、この作業では確認していない。
 
-## 配信担当者の手順
+## Cloudflare Pagesの設定
 
-1. `npm ci`、`npm test`、`npm run build`。
-2. 許可を得た静的ホストのサイトルートへ `dist/` の中身を配置する。ソースや開発サーバーを公開しない。
-3. 有効な証明書のHTTPS URLで、地図スタイル・ワーカー・画像が404にならないことを確認。
-4. 実機でURLを開き、位置情報を許可する。iOSはSafari、AndroidはChromeを確認対象にする。
-5. 必要に応じてホーム画面に追加。ホーム画面起動でもHTTPSと通信は必要。オフライン対応ではない。
+GitHubの `yuyuyu02h/Neosanpo` を接続したPagesプロジェクトで：
 
-位置情報は安全な接続と利用者の許可が必要。[MDN: watchPosition](https://developer.mozilla.org/en-US/docs/Web/API/Geolocation/watchPosition)を参照。PCの `localhost` / `127.0.0.1` はスマホから同じアプリを開くURLではない。PCのローカルIPへのHTTP接続もGPSの代用にならない。
+| 項目               | 値                 |
+| ------------------ | ------------------ |
+| 本番ブランチ       | main               |
+| フレームワーク     | Vite（またはNone） |
+| ビルドコマンド     | npm run build      |
+| 出力ディレクトリ   | dist               |
+| ルートディレクトリ | リポジトリ直下     |
 
-## 実機の合格項目（未実施）
+変更をGitHubへPushすると、Git連携を設定したPagesが新しいビルドを開始する。今回の作業でPushはしていない。Workers用の `npx wrangler deploy` は、この静的Pagesのビルド設定には使わない。
 
-- 許可前には地図がなく、許可後はその場の実際の道が表示される。
-- 「現実」と異世界表示で、道の位置が一致する。
-- 120m以上離れた候補へ実際に歩き、GPSに自分の表示が追従する。
-- 同じ場所に留まる・地図を操作するだけでは取得ボタンが出ない。
-- 到着して位置が安定したら取得し、再読込後にも品が残る。
-- 位置情報の拒否・精度不足・通信途絶から復帰できる。
-- 画面ロック・アプリ切替から戻ると継続歩行の確認を取り直す。
-- GPSの測位頻度と精度が実際の端末で条件を満たすかを記録し、必要なら `WALK_RULES` を調整する。
+ビルド成功後、Pagesが表示するHTTPS URLをスマホで開く。`/fantasy/castle.webp` が表示され、地図・ワーカーが404にならないことを確認する。
 
-散歩中は画面を開いて使用。対応する端末では画面の消灯を抑えるが、OSや省電力設定で解除されることがある。[MDN: Screen Wake Lock API](https://developer.mozilla.org/en-US/docs/Web/API/Screen_Wake_Lock_API)。バックグラウンド測位の保証はない。
+PCの `localhost` はスマホから開くURLではない。PCのローカルIPへHTTPで接続してもGPSは使えない。[MDN: watchPosition](https://developer.mozilla.org/en-US/docs/Web/API/Geolocation/watchPosition)。
+
+## 実機の確認項目（未実施）
+
+- Safari / Chromeで位置情報と正確な位置を許可し、その場の道路が表示される。
+- 現実・異世界表示で道路の位置が一致する。
+- 小さな下部操作バーが地図を妨げない。
+- 「ルートを表示」で道に沿った線が表示される。
+- 公共の道路上の候補へ実際に歩き、現在地が追従する。
+- 静止・地図操作だけでは取得できず、到着が安定したら取得できる。
+- 学校・大学・私有地への経路になっていないことを現場でも確認。入れない地点は非表示にする。
+- 再読込後もコレクションが残る。
+- GPS拒否・通信失敗・画面ロックから復帰できる。
+- GPS精度・測位頻度・電池消費を記録する。
+
+画面を開いて使用する。消灯抑制は対応端末のみで、OSや省電力設定により解除されることがある。[MDN: Screen Wake Lock](https://developer.mozilla.org/en-US/docs/Web/API/Screen_Wake_Lock_API)。

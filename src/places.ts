@@ -1,133 +1,119 @@
 import type { Coordinate, Place } from './types.ts';
-import { distance, stableHash, validCoordinate } from './geo.ts';
+import { distance, stableHash } from './geo.ts';
 import { items } from './items.ts';
 import { WALK_RULES } from './walking.ts';
-
-interface OSMElement {
-  id: number;
-  type: string;
-  lon: number;
-  lat: number;
-  tags?: Record<string, string>;
-}
-interface Cache {
-  position: Coordinate;
-  timestamp: number;
+import { buildNetwork, reachable, type OSMElement, type WalkingNetwork } from './navigation.ts';
+export interface NearbyResult {
   places: Place[];
+  network: WalkingNetwork;
 }
-let cache: Cache | null = null;
-
-export function placesFromOSM(elements: OSMElement[], position: Coordinate): Place[] {
-  const accepted = elements.filter(
-    (e) =>
-      e.type === 'node' &&
-      ['bench', 'drinking_water'].includes(e.tags?.amenity ?? '') &&
-      validCoordinate([e.lon, e.lat]) &&
-      !['private', 'no', 'customers'].includes(e.tags?.access ?? '') &&
-      distance(position, [e.lon, e.lat]) >= WALK_RULES.minimumDestination &&
-      distance(position, [e.lon, e.lat]) <= 1400,
+let cache: { position: Coordinate; timestamp: number; result: NearbyResult } | null = null;
+function landmarkPoint(e: OSMElement): Coordinate | null {
+  if (e.lon !== undefined && e.lat !== undefined) return [e.lon, e.lat];
+  const g = e.geometry ?? e.members?.find((m) => m.geometry?.length)?.geometry;
+  if (!g?.length) return null;
+  return [g.reduce((s, p) => s + p.lon, 0) / g.length, g.reduce((s, p) => s + p.lat, 0) / g.length];
+}
+export function placesFromNetwork(network: WalkingNetwork, position: Coordinate): Place[] {
+  const search = reachable(network, position);
+  if (!search) return [];
+  const candidates = [...network.nodes.values()].filter(
+    (n) =>
+      (search.costs.get(n.id) ?? Infinity) >= WALK_RULES.minimumDestination &&
+      (search.costs.get(n.id) ?? Infinity) <= 1400 &&
+      distance(position, n.coordinate) >= WALK_RULES.minimumDestination,
   );
-  const spaced: OSMElement[] = [];
-  for (const element of accepted.sort(
-    (a, b) => distance(position, [a.lon, a.lat]) - distance(position, [b.lon, b.lat]),
+  const result: Place[] = [];
+  for (const node of candidates.sort(
+    (a, b) => search.costs.get(a.id)! - search.costs.get(b.id)! || a.id.localeCompare(b.id),
   )) {
-    if (spaced.every((e) => distance([e.lon, e.lat], [element.lon, element.lat]) > 80))
-      spaced.push(element);
-    if (spaced.length >= 10) break;
+    if (result.some((p) => distance(p.coordinate, node.coordinate) < 130)) continue;
+    let label = '道路上',
+      closest = 80;
+    for (const landmark of network.landmarks) {
+      const point = landmarkPoint(landmark);
+      if (!point) continue;
+      const gap = distance(point, node.coordinate);
+      if (gap < closest) {
+        closest = gap;
+        label = `${landmark.tags?.name ?? (landmark.tags?.shop === 'convenience' ? 'コンビニ' : landmark.tags?.shop === 'supermarket' ? 'スーパー' : '公園')}付近の道`;
+      }
+    }
+    const item = items[stableHash(`road-${node.id}`) % items.length];
+    result.push({
+      id: `road-${node.id}`,
+      nodeId: node.id,
+      coordinate: node.coordinate,
+      name: item.name,
+      realName: label,
+      hint: '',
+      itemId: item.id,
+      routeDistance: search.costs.get(node.id)!,
+    });
+    if (result.length >= 12) break;
   }
-  const titles = [
-    '木陰に残されたもの',
-    '道ばたの小さな気配',
-    '誰かが通ったあと',
-    '風が止まるところ',
-    '足もとの忘れもの',
-  ];
-  return spaced.map((e) => {
-    const hash = stableHash(`node-${e.id}`);
-    return {
-      id: `osm-node-${e.id}`,
-      coordinate: [e.lon, e.lat],
-      name: titles[hash % titles.length],
-      realName:
-        e.tags?.name ??
-        (e.tags?.amenity === 'drinking_water' ? '地図上の水飲み場付近' : '地図上のベンチ付近'),
-      hint: 'いつもの道に、見慣れないものが落ちている。',
-      itemId: items[hash % items.length].id,
-    };
-  });
+  return result;
 }
-
-export async function nearbyPlaces(position: Coordinate, signal?: AbortSignal): Promise<Place[]> {
-  if (cache && Date.now() - cache.timestamp < 300000 && distance(cache.position, position) < 300)
-    return cache.places;
+export function placesFromOSM(elements: OSMElement[], position: Coordinate): Place[] {
+  return placesFromNetwork(buildNetwork(elements, position), position);
+}
+export async function nearbyPlaces(
+  position: Coordinate,
+  signal?: AbortSignal,
+): Promise<NearbyResult> {
+  if (cache && Date.now() - cache.timestamp < 300000 && distance(cache.position, position) < 250)
+    return {
+      network: cache.result.network,
+      places: placesFromNetwork(cache.result.network, position),
+    };
   const [lon, lat] = position;
-  const query = `[out:json][timeout:15];(node["amenity"="bench"]["access"!~"private|no|customers"](around:1200,${lat.toFixed(5)},${lon.toFixed(5)});node["amenity"="drinking_water"]["access"!~"private|no|customers"](around:1200,${lat.toFixed(5)},${lon.toFixed(5)}););out body 100;`;
-  const endpoints = ['https://overpass-api.de/api/interpreter'];
-  for (const endpoint of endpoints) {
-    if (signal?.aborted) throw new DOMException('中断されました', 'AbortError');
+  const near = `${lat.toFixed(5)},${lon.toFixed(5)}`;
+  // 矩形で空間検索を先に絞り、混雑する公開APIの処理量を減らす。
+  const box = (meters: number) => {
+    const dy = meters / 111195,
+      dx = dy / Math.cos((lat * Math.PI) / 180);
+    return `${(lat - dy).toFixed(5)},${(lon - dx).toFixed(5)},${(lat + dy).toFixed(5)},${(lon + dx).toFixed(5)}`;
+  };
+  const access = '^(private|no|customers|permit|destination|delivery|agricultural|forestry)$';
+  const amenities =
+    '^(school|university|college|kindergarten|childcare|prison|research_institute)$';
+  const landuse = '^(military|construction|industrial|railway|education)$';
+  const query = `[out:json][timeout:20][maxsize:134217728];
+    is_in(${near})->.enclosing;
+    (area.enclosing["amenity"~"${amenities}"];area.enclosing["access"~"${access}"];
+     area.enclosing["foot"~"${access}"];area.enclosing["military"];area.enclosing["landuse"~"${landuse}"];)->.restricted;
+    (way(pivot.restricted);relation(pivot.restricted);
+     way["highway"~"^(residential|living_street|pedestrian|footway|steps|path|cycleway|unclassified|tertiary|secondary|primary)$"](${box(900)});
+     nwr["amenity"~"${amenities}"](${box(1400)});
+     nwr["access"~"${access}"](${box(1400)});nwr["foot"~"${access}"](${box(1400)});
+     nwr["landuse"~"${landuse}"](${box(1400)});nwr["military"](${box(1400)});
+     way["building"](${box(950)});relation["building"](${box(950)});node["barrier"](${box(950)});
+     nwr["shop"~"^(convenience|supermarket)$"](${box(950)});nwr["leisure"="park"](${box(1400)});
+    );out geom;`;
+
+  for (const endpoint of [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.private.coffee/api/interpreter',
+  ]) {
+    if (signal?.aborted) throw new DOMException('中断', 'AbortError');
     try {
-      const requestSignal = signal
-        ? AbortSignal.any([signal, AbortSignal.timeout(12000)])
-        : AbortSignal.timeout(12000);
       const response = await fetch(endpoint, {
         method: 'POST',
         body: new URLSearchParams({ data: query }),
-        signal: requestSignal,
+        signal: signal
+          ? AbortSignal.any([signal, AbortSignal.timeout(30000)])
+          : AbortSignal.timeout(30000),
       });
       if (!response.ok) continue;
       const data = await response.json();
-      if (!Array.isArray(data.elements)) continue;
-      const places = placesFromOSM(data.elements, position);
-      cache = { position, timestamp: Date.now(), places };
-      return places;
-    } catch {
-      if (signal?.aborted) throw new DOMException('中断されました', 'AbortError');
+      if (!Array.isArray(data.elements) || data.remark) continue;
+      const network = buildNetwork(data.elements, position);
+      const result = { network, places: placesFromNetwork(network, position) };
+      cache = { position, timestamp: Date.now(), result };
+      return result;
+    } catch (error) {
+      if (signal?.aborted) throw error;
     }
   }
-  // Overpassが混雑している場合は、約400m四方ずつのOSM元データから候補を拾う。
-  try {
-    const latSpan = 0.0036;
-    const lonSpan = Math.min(0.012, latSpan / Math.max(0.3, Math.cos((lat * Math.PI) / 180)));
-    const bbox = [
-      Math.max(-180, lon - lonSpan),
-      Math.max(-90, lat - latSpan),
-      Math.min(180, lon + lonSpan),
-      Math.min(90, lat + latSpan),
-    ]
-      .map((n) => n.toFixed(5))
-      .join(',');
-    const requestSignal = signal
-      ? AbortSignal.any([signal, AbortSignal.timeout(20000)])
-      : AbortSignal.timeout(20000);
-    const response = await fetch(`https://api.openstreetmap.org/api/0.6/map?bbox=${bbox}`, {
-      signal: requestSignal,
-    });
-    if (response.ok) {
-      const xml = new DOMParser().parseFromString(await response.text(), 'application/xml');
-      if (xml.querySelector('parsererror')) throw new Error('地図データの形式を確認できません');
-      const elements: OSMElement[] = [];
-      xml.querySelectorAll('node').forEach((node) => {
-        const tags = Object.fromEntries(
-          [...node.querySelectorAll('tag')].map((tag) => [
-            tag.getAttribute('k')!,
-            tag.getAttribute('v')!,
-          ]),
-        );
-        if (['bench', 'drinking_water'].includes(tags.amenity))
-          elements.push({
-            type: 'node',
-            id: Number(node.getAttribute('id')),
-            lon: Number(node.getAttribute('lon')),
-            lat: Number(node.getAttribute('lat')),
-            tags,
-          });
-      });
-      const places = placesFromOSM(elements, position);
-      cache = { position, timestamp: Date.now(), places };
-      return places;
-    }
-  } catch {
-    if (signal?.aborted) throw new DOMException('中断されました', 'AbortError');
-  }
-  throw new Error('近くの地図を読み込めませんでした。通信を確認して、もう一度探してください。');
+  throw new Error('道路と立入制限の情報を取得できませんでした。通信を確認して再検索してください。');
 }

@@ -12,7 +12,7 @@ if not (root / "dist" / "index.html").exists():
 release = root / "release"
 release.mkdir(exist_ok=True)
 entries = [
-    "src", "public", "dist", "docs", "tests", "scripts", "index.html",
+    "src", "public", "assets", "dist", "docs", "tests", "scripts", "index.html",
     "package.json", "package-lock.json", "tsconfig.json", "vite.config.ts",
     "README.md", "REQUIREMENTS.md", "PLAN.md", "CONCEPT.md", "AGENTS.md",
     "THIRD_PARTY_NOTICES.md", ".gitignore", ".prettierrc.json", ".prettierignore",

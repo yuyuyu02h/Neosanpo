@@ -13,6 +13,8 @@ export interface Item {
 }
 
 export interface Place {
+  nodeId: string;
+  routeDistance: number;
   id: string;
   coordinate: Coordinate;
   name: string;
@@ -50,6 +52,7 @@ export interface Session {
   place: Place;
   startedAt: string;
   evidence: WalkingEvidence;
+  route: import('./navigation.ts').WalkingRoute;
 }
 
 export interface LocationFix {

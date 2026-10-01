@@ -117,21 +117,6 @@ test('旧デモ取得を引き継がず、実散歩の記録だけv2へ移行', 
   assert.throws(() => parseSave('{broken'));
   assert.throws(() => parseSave('{"version":3,"finds":[],"walks":[]}'));
 });
-test('周辺候補は120m以上・1400m以内、私有地と密集を除外', () => {
-  const nodes = [
-    { id: 1, type: 'node', lon: 139, lat: 35, tags: { amenity: 'bench' } },
-    { id: 2, type: 'node', lon: 139, lat: 35.0018, tags: { amenity: 'bench' } },
-    { id: 3, type: 'node', lon: 139, lat: 35.00181, tags: { amenity: 'bench' } },
-    { id: 4, type: 'node', lon: 139, lat: 35.003, tags: { amenity: 'bench', access: 'private' } },
-    { id: 5, type: 'node', lon: 139, lat: 36, tags: { amenity: 'bench' } },
-    { id: 6, type: 'node', lon: 139, lat: 35.0036, tags: { amenity: 'drinking_water' } },
-  ];
-  assert.deepEqual(
-    placesFromOSM(nodes, origin).map((p) => p.id),
-    ['osm-node-2', 'osm-node-6'],
-  );
-  assert.deepEqual(placesFromOSM(nodes, origin), placesFromOSM(nodes, origin));
-});
 test('12種類が独立した品として存在', () => {
   assert.equal(items.length, 12);
   assert.equal(new Set(items.map((i) => i.id)).size, 12);

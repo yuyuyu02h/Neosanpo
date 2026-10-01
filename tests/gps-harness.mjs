@@ -40,10 +40,23 @@ export async function emit(page, latitude, longitude, seconds = 5, accuracy = 5,
     [latitude, longitude, seconds, accuracy, speed],
   );
 }
-export const bench = {
-  id: 901,
-  type: 'node',
-  lon: 135.5023,
-  lat: 34.6957,
-  tags: { amenity: 'bench', name: '検証用ベンチ' },
-};
+export const origin = [135.5023, 34.6939];
+export const roadFixture = [
+  {
+    id: 90,
+    type: 'way',
+    tags: { highway: 'pedestrian' },
+    nodes: Array.from({ length: 81 }, (_, i) => 100 + i),
+    geometry: Array.from({ length: 81 }, (_, i) => ({
+      lon: 135.5023,
+      lat: 34.6939 + i * 0.000045,
+    })),
+  },
+  {
+    id: 901,
+    type: 'node',
+    lon: 135.5025,
+    lat: 34.6952,
+    tags: { shop: 'convenience', name: 'テスト店' },
+  },
+];

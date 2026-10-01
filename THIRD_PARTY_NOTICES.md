@@ -34,3 +34,7 @@
 `src/art.ts`、`src/icons.ts`、`src/items.ts` は本作品用に制作したSVG・文章です。第三者のゲーム画面・アイテム画像・製品写真は使用していません。Nationalの名称はアイテムの題材として登場します。
 
 その他の依存ライブラリは `package-lock.json` と各npmパッケージのLICENSEを参照してください。
+
+## v3のAI素材
+
+城・塔・樹上の村・遺跡・地形は内蔵画像生成で本作品用に制作。元画像は `assets/source-art/`、配信用は `public/fantasy/`。制作記録と正確なプロンプトは `docs/ASSETS.md` と `docs/ASSET_PROMPTS.json`。地図上の配置点はOSM由来の地物に基づきます。地図の帰属表示は保持しています。
