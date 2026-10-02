@@ -26,6 +26,7 @@ export interface WalkingRoute {
   coordinates: Coordinate[];
   distance: number;
   destination: string;
+  approachDistance: number;
 }
 const forbiddenAccess = new Set([
   'private',
@@ -123,9 +124,9 @@ export function segmentBlocked(a: Coordinate, b: Coordinate, rings: Coordinate[]
         d = ring[(i + 1) % ring.length];
       if (
         crossing(a, b, c, d) ||
-        segmentDistance(a, c, d) < 3 ||
-        segmentDistance(b, c, d) < 3 ||
-        segmentDistance(c, a, b) < 3
+        segmentDistance(a, c, d) < 0.15 ||
+        segmentDistance(b, c, d) < 0.15 ||
+        segmentDistance(c, a, b) < 0.15
       )
         return true;
     }
@@ -197,23 +198,40 @@ function walkable(tags: Record<string, string>): boolean {
     tags.area === 'yes' ||
     tags.indoor === 'yes' ||
     tags.tunnel === 'yes' ||
-    tags.sidewalk === 'no' ||
+    tags.motorroad === 'yes' ||
     tags.construction
   )
     return false;
-  if (['residential', 'living_street', 'pedestrian', 'footway', 'steps'].includes(tags.highway))
-    return !['private', 'driveway'].includes(tags.service);
   if (
-    ['path', 'cycleway', 'unclassified', 'tertiary', 'secondary', 'primary'].includes(tags.highway)
+    [
+      'residential',
+      'living_street',
+      'pedestrian',
+      'footway',
+      'steps',
+      'unclassified',
+      'tertiary',
+    ].includes(tags.highway)
   )
+    return !['private', 'driveway'].includes(tags.service);
+  if (['path', 'cycleway', 'secondary', 'primary'].includes(tags.highway))
     return (
       ['yes', 'designated'].includes(tags.foot) ||
-      ['both', 'left', 'right', 'yes', 'separate'].includes(tags.sidewalk)
+      ['sidewalk', 'sidewalk:left', 'sidewalk:right', 'sidewalk:both'].some((key) =>
+        ['both', 'left', 'right', 'yes', 'separate', 'lane'].includes(tags[key]),
+      )
     );
   return false;
 }
 export function buildNetwork(elements: OSMElement[], origin: Coordinate): WalkingNetwork {
   const blocked: Coordinate[][] = [];
+  const mappedSites = elements
+    .filter(
+      (e) =>
+        e.type !== 'node' &&
+        (excludedAmenities.has(e.tags?.amenity ?? '') || e.tags?.landuse === 'education'),
+    )
+    .flatMap(elementRings);
   const blockedNodes = new Set<number>();
   for (const e of elements) {
     if (
@@ -238,10 +256,18 @@ export function buildNetwork(elements: OSMElement[], origin: Coordinate): Walkin
           e.tags?.type === 'multipolygon')
       )
         throw new Error('立入制限区域の形を確認できませんでした。');
-      if (rings.length) blocked.push(...rings);
-      else if (e.type === 'node' && validCoordinate([e.lon, e.lat])) {
+      if (rings.length) {
+        blocked.push(...rings);
+      } else if (e.type === 'node' && validCoordinate([e.lon, e.lat])) {
         // 敷地の輪郭が未登録の学校等は、広めに除外して候補に使わない。
-        const radius = excludedAmenities.has(e.tags?.amenity ?? '') ? 250 : 30;
+        if (
+          excludedAmenities.has(e.tags?.amenity ?? '') &&
+          mappedSites.some((r) => ringContains([e.lon!, e.lat!], r))
+        )
+          continue;
+        // 私有のベンチ・駐輪設備の点は周辺の公共道路まで私有地にしない。
+        if (!excludedAmenities.has(e.tags?.amenity ?? '') && !e.tags?.military) continue;
+        const radius = 250;
         blocked.push(
           Array.from(
             { length: 25 },
@@ -279,7 +305,7 @@ export function buildNetwork(elements: OSMElement[], origin: Coordinate): Walkin
       )
         continue;
       const length = distance(a, b);
-      if (length < 0.1 || length > 350) continue;
+      if (length < 0.1 || length > 2500) continue;
       // 長い道も約35mごとの固定地点を持つ。線分自体はOSMの道の形を保持する。
       const steps = Math.ceil(length / 35);
       let previous = String(way.nodes![i - 1]);
@@ -307,28 +333,31 @@ export function buildNetwork(elements: OSMElement[], origin: Coordinate): Walkin
     origin,
   };
 }
+function roadStarts(network: WalkingNetwork, position: Coordinate, maxMeters?: number): RoadNode[] {
+  // 始点は道路上。自分がいる建物・敷地から道路までの線は描かない。
+  // 他の建物や区域を突き抜けて道路を選ぶことはしない。
+  const barriers = network.blocked.filter((r) => !ringContains(position, r));
+  const limit = maxMeters ?? (barriers.length < network.blocked.length ? 200 : 100);
+  return [...network.nodes.values()]
+    .filter(
+      (node) =>
+        distance(position, node.coordinate) <= limit &&
+        !segmentBlocked(position, node.coordinate, barriers),
+    )
+    .sort(
+      (a, b) =>
+        distance(position, a.coordinate) - distance(position, b.coordinate) ||
+        a.id.localeCompare(b.id),
+    );
+}
 export function nearestRoad(
   network: WalkingNetwork,
   position: Coordinate,
-  maxMeters = 55,
+  maxMeters?: number,
 ): RoadNode | null {
-  let best: RoadNode | null = null,
-    minimum = maxMeters;
-  for (const node of network.nodes.values()) {
-    const meters = distance(position, node.coordinate);
-    if (meters < minimum && !segmentBlocked(position, node.coordinate, network.blocked)) {
-      minimum = meters;
-      best = node;
-    }
-  }
-  return best;
+  return roadStarts(network, position, maxMeters)[0] ?? null;
 }
-export function reachable(
-  network: WalkingNetwork,
-  position: Coordinate,
-): { start: RoadNode; costs: Map<string, number>; parents: Map<string, string> } | null {
-  const start = nearestRoad(network, position);
-  if (!start) return null;
+function searchFrom(network: WalkingNetwork, start: RoadNode) {
   const costs = new Map([[start.id, 0]]),
     parents = new Map<string, string>(),
     pending = new Set([start.id]);
@@ -353,6 +382,29 @@ export function reachable(
   }
   return { start, costs, parents };
 }
+export function reachable(
+  network: WalkingNetwork,
+  position: Coordinate,
+): ReturnType<typeof searchFrom> | null {
+  const visited = new Set<string>();
+  let fallback: ReturnType<typeof searchFrom> | null = null;
+  for (const start of roadStarts(network, position)) {
+    if (visited.has(start.id)) continue;
+    const search = searchFrom(network, start);
+    for (const id of search.costs.keys()) visited.add(id);
+    fallback ??= search;
+    if (
+      [...search.costs].some(
+        ([id, cost]) =>
+          cost >= 120 &&
+          cost <= 1400 &&
+          distance(position, network.nodes.get(id)!.coordinate) >= 120,
+      )
+    )
+      return search;
+  }
+  return fallback;
+}
 export function findRoute(
   network: WalkingNetwork,
   position: Coordinate,
@@ -368,12 +420,17 @@ export function findRoute(
     id = search.parents.get(id)!;
     if (!id) return null;
   }
-  return { coordinates, distance: search.costs.get(target)!, destination: target };
+  return {
+    coordinates,
+    distance: search.costs.get(target)!,
+    destination: target,
+    approachDistance: distance(position, coordinates[0]),
+  };
 }
 export function routeProgress(
   route: WalkingRoute,
   position: Coordinate,
-): { remaining: number; offRoute: boolean } {
+): { remaining: number; offRoute: boolean; distanceToRoute: number } {
   let closest = Infinity,
     remaining = route.distance,
     tail = 0;
@@ -387,5 +444,5 @@ export function routeProgress(
     }
     tail += distance(a, b);
   }
-  return { remaining, offRoute: closest > 45 };
+  return { remaining, offRoute: closest > 45, distanceToRoute: closest };
 }

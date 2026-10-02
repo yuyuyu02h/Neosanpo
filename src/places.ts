@@ -1,11 +1,13 @@
 import type { Coordinate, Place } from './types.ts';
 import { distance, stableHash } from './geo.ts';
 import { items } from './items.ts';
+import { structuresFromOSM, type Structure } from './structures.ts';
 import { WALK_RULES } from './walking.ts';
 import { buildNetwork, reachable, type OSMElement, type WalkingNetwork } from './navigation.ts';
 export interface NearbyResult {
   places: Place[];
   network: WalkingNetwork;
+  structures: Structure[];
 }
 let cache: { position: Coordinate; timestamp: number; result: NearbyResult } | null = null;
 function landmarkPoint(e: OSMElement): Coordinate | null {
@@ -60,10 +62,17 @@ export function placesFromOSM(elements: OSMElement[], position: Coordinate): Pla
 export async function nearbyPlaces(
   position: Coordinate,
   signal?: AbortSignal,
+  force = false,
 ): Promise<NearbyResult> {
-  if (cache && Date.now() - cache.timestamp < 300000 && distance(cache.position, position) < 250)
+  if (
+    !force &&
+    cache &&
+    Date.now() - cache.timestamp < 300000 &&
+    distance(cache.position, position) < 250
+  )
     return {
       network: cache.result.network,
+      structures: cache.result.structures,
       places: placesFromNetwork(cache.result.network, position),
     };
   const [lon, lat] = position;
@@ -108,7 +117,11 @@ export async function nearbyPlaces(
       const data = await response.json();
       if (!Array.isArray(data.elements) || data.remark) continue;
       const network = buildNetwork(data.elements, position);
-      const result = { network, places: placesFromNetwork(network, position) };
+      const result = {
+        network,
+        places: placesFromNetwork(network, position),
+        structures: structuresFromOSM(data.elements),
+      };
       cache = { position, timestamp: Date.now(), result };
       return result;
     } catch (error) {

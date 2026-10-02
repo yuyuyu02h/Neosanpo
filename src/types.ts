@@ -49,6 +49,7 @@ export interface SaveData {
 }
 
 export interface Session {
+  approachingRoad: boolean;
   place: Place;
   startedAt: string;
   evidence: WalkingEvidence;

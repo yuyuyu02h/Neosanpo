@@ -5,8 +5,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 import type { Coordinate, Place } from './types.ts';
 import { itemById } from './items.ts';
-import { stableHash } from './geo.ts';
-import { ringContains } from './navigation.ts';
+import { STRUCTURE_ASSETS, structureFeatures, type Structure } from './structures.ts';
 import { itemArt } from './art.ts';
 import { icon, escapeHtml } from './icons.ts';
 
@@ -89,7 +88,7 @@ export class WorldMap {
   private initializing = false;
   private art = new Map<string, ImageData>();
   private route: Coordinate[] | null = null;
-  private artworkSignature = '';
+  private structures = new Map<string, Structure>();
   private ready = false;
   private styleReady = false;
   private loadFailed = false;
@@ -110,9 +109,9 @@ export class WorldMap {
       if (!response.ok) throw new Error('地図の定義を読み込めません');
       this.base = await response.json();
       const assets = await Promise.all(
-        ['castle', 'tower', 'village', 'ruins', 'terrain'].map(
-          async (name) =>
-            [name, await loadArt(`/fantasy/${name}.webp`, name === 'terrain' ? 256 : 384)] as const,
+        Object.entries({ ...STRUCTURE_ASSETS, terrain: '/fantasy/terrain.webp' }).map(
+          async ([name, url]) =>
+            [name, await loadArt(url, name === 'terrain' ? 256 : 384)] as const,
         ),
       );
       assets.forEach(([name, data]) => this.art.set('fantasy-' + name, data));
@@ -139,7 +138,6 @@ export class WorldMap {
       this.updatePadding();
       this.map.on('resize', () => this.updatePadding());
       this.map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
-      this.map.on('idle', () => this.placeArtwork());
       this.map.on('dragstart', () => {
         this.following = false;
       });
@@ -186,7 +184,6 @@ export class WorldMap {
   private decorate(): void {
     if (!this.map || !this.theme || !this.art.size) return;
     const map = this.map;
-    this.artworkSignature = '';
     for (const [name, data] of this.art)
       if (!map.hasImage(name))
         map.addImage(name, data, { pixelRatio: name === 'fantasy-terrain' ? 1 : 2 });
@@ -229,22 +226,31 @@ export class WorldMap {
       .layers.find((l) => l.type === 'line' && l['source-layer'] === 'transportation')?.id;
     map.addSource('fantasy-points', {
       type: 'geojson',
-      data: { type: 'FeatureCollection', features: [] },
+      data: structureFeatures(this.structures.values()),
     });
     map.addLayer(
       {
         id: 'fantasy-buildings',
         type: 'symbol',
         source: 'fantasy-points',
-        minzoom: 14,
+        minzoom: 3,
         layout: {
           'icon-image': ['get', 'art'],
-          'icon-size': ['interpolate', ['linear'], ['zoom'], 14, 0.4, 16, 0.73, 18, 1.1],
+          'icon-size': [
+            'interpolate',
+            ['exponential', 2],
+            ['zoom'],
+            3,
+            ['*', ['get', 'size16'], 2 ** -13],
+            19,
+            ['*', ['get', 'size16'], 8],
+          ],
           'icon-padding': 3,
           'icon-anchor': 'bottom',
-          'icon-allow-overlap': false,
-          'icon-ignore-placement': false,
-          'symbol-sort-key': ['get', 'rank'],
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true,
+          'icon-pitch-alignment': 'map',
+          'icon-rotation-alignment': 'map',
         },
         paint: { 'icon-opacity': 1 },
       },
@@ -263,68 +269,14 @@ export class WorldMap {
       road,
     );
   }
-  private placeArtwork(): void {
-    const map = this.map;
-    if (!map || !this.theme || !map.isStyleLoaded() || !map.getSource('fantasy-points')) return;
-    const features: FeatureCollection['features'] = [];
-    const seen = new Set<string>();
-    for (const layer of ['park', 'building']) {
-      for (const feature of map.queryRenderedFeatures({ layers: [layer] })) {
-        const geometry = feature.geometry;
-        const rings =
-          geometry.type === 'Polygon'
-            ? [geometry.coordinates[0]]
-            : geometry.type === 'MultiPolygon'
-              ? geometry.coordinates.map((p) => p[0])
-              : [];
-        const bounds = map.getBounds();
-        for (const ring of rings) {
-          if (!ring?.length) continue;
-          const xs = ring.map((p) => p[0]),
-            ys = ring.map((p) => p[1]);
-          let center: Coordinate = [
-            (Math.min(...xs) + Math.max(...xs)) / 2,
-            (Math.min(...ys) + Math.max(...ys)) / 2,
-          ];
-          if (!ringContains(center, ring as Coordinate[])) center = ring[0] as Coordinate;
-          if (
-            center[0] < bounds.getWest() - 0.002 ||
-            center[0] > bounds.getEast() + 0.002 ||
-            center[1] < bounds.getSouth() - 0.002 ||
-            center[1] > bounds.getNorth() + 0.002
-          )
-            continue;
-          const key = `${Math.round(center[0] * 20000)}:${Math.round(center[1] * 20000)}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          const hash = stableHash(key);
-          const art =
-            layer === 'park'
-              ? hash % 2
-                ? 'village'
-                : 'ruins'
-              : ['castle', 'tower', 'village', 'tower'][hash % 4];
-          features.push({
-            type: 'Feature',
-            id: key,
-            properties: { art: 'fantasy-' + art, rank: layer === 'park' ? 0 : 1 },
-            geometry: { type: 'Point', coordinates: center },
-          });
-        }
-      }
+  setStructures(structures: Structure[]): void {
+    for (const structure of structures)
+      if (!this.structures.has(structure.id)) this.structures.set(structure.id, structure);
+    // カメラの拡大縮小では更新しない。完全なOSM形状を読み込んだときだけ追加。
+    if (this.styleReady && this.theme) {
+      const source = this.map?.getSource('fantasy-points') as maplibregl.GeoJSONSource | undefined;
+      source?.setData(structureFeatures(this.structures.values()));
     }
-    features.sort((a, b) => String(a.id).localeCompare(String(b.id)));
-
-    const signature = features
-      .map((f) => f.id)
-      .sort()
-      .join('|');
-    if (signature === this.artworkSignature) return;
-    this.artworkSignature = signature;
-    (map.getSource('fantasy-points') as maplibregl.GeoJSONSource).setData({
-      type: 'FeatureCollection',
-      features,
-    });
   }
 
   setRoute(coordinates: Coordinate[] | null): void {
@@ -434,7 +386,9 @@ export class WorldMap {
     this.following = true;
     const padding = this.padding();
     this.map.setPadding({ top: 0, bottom: 0, left: 0, right: 0 });
-    const points = this.route?.length ? this.route : [this.playerPosition, target];
+    const points = this.route?.length
+      ? [this.playerPosition, ...this.route]
+      : [this.playerPosition, target];
     const bounds = new maplibregl.LngLatBounds();
     points.forEach((p) => bounds.extend(p));
     this.map.fitBounds(bounds, { padding, maxZoom: 17, pitch: 0, duration: 600 });

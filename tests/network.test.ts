@@ -164,3 +164,101 @@ test('区域の境界が欠ける場合は候補の生成を止める', () => {
   const through = way(2, [origin, [139.003, 35]]);
   assert.equal(buildNetwork([through, polygon({ landuse: 'education' })], origin).nodes.size, 0);
 });
+
+test('家の中から付近の道路を始点にでき、建物から道路への線は描かない', () => {
+  const house = way(
+    90,
+    [
+      [138.9999, 34.9999],
+      [139.0001, 34.9999],
+      [139.0001, 35.0001],
+      [138.9999, 35.0001],
+      [138.9999, 34.9999],
+    ],
+    { building: 'house', access: 'private' },
+  );
+  const road = way(
+    1,
+    [
+      [139.0004, 34.9995],
+      [139.0004, 35.004],
+    ],
+    { highway: 'residential', sidewalk: 'no' },
+  );
+  const net = buildNetwork([house, road], origin);
+  const places = placesFromNetwork(net, origin);
+  assert.ok(places.length);
+  const route = findRoute(net, origin, places[0].nodeId)!;
+  assert.ok(route.approachDistance > 20);
+  assert.ok(route.coordinates.every((p) => p[0] === 139.0004));
+});
+test('建物から1mの細い道と、歩道タグを省略した一般道を採用する', () => {
+  const house = way(
+    90,
+    [
+      [139.00001, 34.999],
+      [139.0002, 34.999],
+      [139.0002, 35.003],
+      [139.00001, 35.003],
+      [139.00001, 34.999],
+    ],
+    { building: 'house' },
+  );
+  for (const highway of ['residential', 'unclassified', 'tertiary'])
+    assert.ok(
+      placesFromNetwork(
+        buildNetwork([way(1, [origin, [139, 35.003]], { highway }), house], origin),
+        origin,
+      ).length,
+    );
+});
+test('最寄りの短い孤立路で打ち切らず、近くの接続された道から候補を探す', () => {
+  const net = buildNetwork(
+    [
+      way(1, [origin, [139, 35.0002]]),
+      way(2, [
+        [139.0003, 34.999],
+        [139.0003, 35.004],
+      ]),
+    ],
+    origin,
+  );
+  const places = placesFromNetwork(net, origin);
+  assert.ok(places.length);
+  assert.ok(places.every((p) => p.coordinate[0] === 139.0003));
+});
+test('私有のベンチの点は周辺の公共道路を塞がない', () => {
+  const bench: OSMElement = {
+    type: 'node',
+    id: 80,
+    lon: 139.0001,
+    lat: 35.001,
+    tags: { amenity: 'bench', access: 'private' },
+  };
+  assert.ok(
+    placesFromNetwork(buildNetwork([way(1, [origin, [139, 35.003]]), bench], origin), origin)
+      .length,
+  );
+});
+test('敷地が登録済みの学校では点から半径250mを重ねて公共道路を消さない', () => {
+  const school = polygon({ amenity: 'school' });
+  const label: OSMElement = {
+    type: 'node',
+    id: 88,
+    lon: 139.0015,
+    lat: 35,
+    tags: { amenity: 'school' },
+  };
+  const net = buildNetwork(
+    [
+      way(1, [
+        [139, 34.998],
+        [139, 35.003],
+      ]),
+      school,
+      label,
+    ],
+    origin,
+  );
+  assert.ok(placesFromNetwork(net, origin).length);
+});

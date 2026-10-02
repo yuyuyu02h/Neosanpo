@@ -1,7 +1,7 @@
 import './style.css';
 import { WorldMap } from './map.ts';
 import { nearbyPlaces } from './places.ts';
-import { findRoute, routeProgress, type WalkingNetwork } from './navigation.ts';
+import { findRoute, routeProgress, nearestRoad, type WalkingNetwork } from './navigation.ts';
 import { itemById } from './items.ts';
 import { itemArt, landscape, sprig } from './art.ts';
 import { icon, escapeHtml as esc } from './icons.ts';
@@ -39,6 +39,8 @@ let locating = false;
 let searchController: AbortController | null = null;
 let searching = false;
 let searchError = '';
+let lastSearchPosition: Coordinate | null = null;
+let lastSearchAt = 0;
 let dialogFind: Find | null = null;
 let toastTimeout: ReturnType<typeof setTimeout>;
 let soundContext: AudioContext | null = null;
@@ -209,15 +211,17 @@ function renderQuest(): void {
     ? 'GPSを再確認してください'
     : !fresh
       ? 'GPSを確認中'
-      : offRoute
-        ? 'ルートを外れています'
-        : ready
-          ? '到着しました'
-          : state === 'settling'
-            ? '到着を確認中…'
-            : session
-              ? `徒歩ルート · 残り${formatDistance(meters)}`
-              : `${esc(place.realName)} · 約${Math.max(1, Math.ceil(meters / 70))}分`;
+      : session?.approachingRoad
+        ? 'まず道路に出てください'
+        : offRoute
+          ? 'ルートを外れています'
+          : ready
+            ? '到着しました'
+            : state === 'settling'
+              ? '到着を確認中…'
+              : session
+                ? `徒歩ルート · 残り${formatDistance(meters)}`
+                : `${esc(place.realName)} · 約${Math.max(1, Math.ceil(meters / 70))}分`;
   card.innerHTML = `<div class="dock-row"><button class="dock-item" data-action="route-details" aria-label="${esc(place.name)}の詳細">${itemArt(item.art)}</button><button class="dock-copy" data-action="${session ? 'route-details' : 'destinations'}"><strong>${esc(place.name)}</strong><span class="quest-place">${note}</span></button><button class="primary-button dock-action" data-action="${!session ? 'start' : ready ? 'discover' : offRoute ? 'reroute' : 'route-details'}" ${!session && !fresh ? 'disabled' : ''}>${!session ? 'ルートを表示' : ready ? '拾う' : offRoute ? '再検索' : `${formatDistance(meters)} ${icon('arrow', 15)}`}</button></div>`;
 }
 
@@ -330,6 +334,7 @@ function reroute(): void {
     return;
   }
   session.route = route;
+  session.approachingRoad = route.approachDistance > 25;
   remaining = route.distance;
   offRoute = false;
   world.setRoute(route.coordinates);
@@ -373,6 +378,7 @@ function startWalk(): void {
   offRoute = false;
   world.setRoute(route.coordinates);
   session = {
+    approachingRoad: route.approachDistance > 25,
     route,
     place: selected,
     startedAt: new Date().toISOString(),
@@ -382,7 +388,11 @@ function startWalk(): void {
   syncMap();
   renderQuest();
   world.frameDestination(selected.coordinate);
-  toast('徒歩ルートを表示しました。');
+  toast(
+    route.approachDistance > 15
+      ? '近くの道路からのルートです。道路に出てから歩いてください。'
+      : '徒歩ルートを表示しました。',
+  );
 }
 
 function showDiscovery(): void {
@@ -520,7 +530,8 @@ function useLocation(): void {
       if (session) {
         const progress = routeProgress(session.route, position);
         remaining = progress.remaining;
-        offRoute = progress.offRoute;
+        if (progress.distanceToRoute <= 25) session.approachingRoad = false;
+        offRoute = !session.approachingRoad && progress.offRoute;
       }
       updateRegion();
       if (
@@ -531,7 +542,15 @@ function useLocation(): void {
         selected = availablePlaces()[0];
         syncMap();
       }
-      if (first || (!session && places.length === 0 && !searching && !searchError))
+      if (
+        first ||
+        (!session &&
+          places.length === 0 &&
+          !searching &&
+          lastSearchPosition &&
+          distance(position, lastSearchPosition) > 20 &&
+          Date.now() - lastSearchAt > 15000)
+      )
         void searchNearby();
       renderQuest();
     },
@@ -556,7 +575,7 @@ function useLocation(): void {
   );
 }
 
-async function searchNearby(): Promise<void> {
+async function searchNearby(force = false): Promise<void> {
   if (session || !position) return;
   if (!accurateFix(currentFix, Date.now())) {
     toast('正確な現在地を確認してから周辺を探します。');
@@ -570,13 +589,20 @@ async function searchNearby(): Promise<void> {
   searchError = '';
   renderQuest();
   try {
-    const found = await nearbyPlaces(position, controller.signal);
+    lastSearchPosition = [...position];
+    lastSearchAt = Date.now();
+    const found = await nearbyPlaces(position, controller.signal, force);
     if (controller.signal.aborted) return;
     network = found.network;
+    world.setStructures(found.structures);
     places = found.places;
     selected = availablePlaces()[0];
     if (places.length === 0)
-      searchError = '近くに歩けるルートが見つかりません。公共の道路で再検索してください。';
+      searchError = !network.nodes.size
+        ? '周辺の道路情報が不足しています。少し移動して再検索してください。'
+        : !nearestRoad(network, position)
+          ? '近くの道路まで距離があります。道路に近づくと再検索します。'
+          : 'この道から行けるアイテムがありません。別の道で再検索してください。';
     syncMap();
     if (selected) world.frameDestination(selected.coordinate);
   } catch (error) {
@@ -679,7 +705,7 @@ document.addEventListener('click', (event) => {
       renderQuest();
       break;
     case 'search-nearby':
-      void searchNearby();
+      void searchNearby(true);
       break;
     case 'destinations':
       showDestinations();
